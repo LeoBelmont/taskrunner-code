@@ -2,7 +2,16 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as JSON5 from 'json5';
 
-export class TaskTreeDataProvider implements vscode.TreeDataProvider<TreeTask> {
+export class WorkspaceTreeItem extends vscode.TreeItem {
+    children: TreeTask[] = [];
+
+    constructor (label: string) {
+        super(label, vscode.TreeItemCollapsibleState.Collapsed);
+    }
+}
+
+export class TaskTreeDataProvider implements
+vscode.TreeDataProvider<TreeTask | WorkspaceTreeItem> {
     private readonly _context: vscode.ExtensionContext;
     private readonly _onDidChangeTreeData: vscode.EventEmitter<TreeTask | null>
     = new vscode.EventEmitter<TreeTask | null>();
@@ -198,46 +207,71 @@ export class TaskTreeDataProvider implements vscode.TreeDataProvider<TreeTask> {
         }
     }
 
-    public async getChildren (task?: TreeTask): Promise<TreeTask[]> {
+    public async getChildren (task?: TreeTask | WorkspaceTreeItem):
+    Promise<Array<TreeTask | WorkspaceTreeItem>> {
+        if (task instanceof WorkspaceTreeItem) {
+            // If this is a workspace item, return only its children
+            return task.children;
+        }
+
+        // Otherwise, return the top-level list
         let tasks: vscode.Task[] = await vscode.tasks.fetchTasks();
         tasks = tasks.filter(t => t.source === "Workspace");
 
-        // also read the tasks.json file from the workspace
+        const taskElements: Array<WorkspaceTreeItem | TreeTask> = [];
+        const taskFolders: { [key: string]: WorkspaceTreeItem } = {};
 
-        let taskNames: TreeTask[] = [];
-        if (tasks.length !== 0) {
-            for (var i = 0; i < tasks.length; i++) {
-                const _task = new TreeTask(
-                    tasks[i].definition.type,
-                    tasks[i].name,
-                    vscode.TreeItemCollapsibleState.None,
-                    {
-                        command: 'taskOutlinePlus.executeTask',
-                        title: "Execute",
-                        arguments: [tasks[i], tasks[i].scope]
-                    },
-                    tasks[i].scope
-                );
+        for (const task of tasks) {
+            const _task = new TreeTask(
+                task.definition.type,
+                task.name,
+                vscode.TreeItemCollapsibleState.None,
+                {
+                    command: 'taskOutlinePlus.executeTask',
+                    title: "Execute",
+                    arguments: [task, task.scope]
+                },
+                task.scope
+            );
 
-                if (tasks[i].detail != null) {
-                    _task.tooltip = tasks[i].detail;
-                }
-
-                if (!_task.hide || this._unhide) {
-                    taskNames.push(_task);
-                }
+            if (task.detail != null) {
+                _task.tooltip = task.detail;
             }
 
-            // order by name
-            taskNames = taskNames.sort((one, two) =>
-                (one.label! < two.label! ? -1 : 1)
-            );
+            if (!_task.hide || this._unhide) {
+                if (_task.workspace !== null) {
+                    if (taskFolders[_task.workspace] === undefined) {
+                        const ws = new WorkspaceTreeItem(_task.workspace);
+                        taskFolders[_task.workspace] = ws;
+                        taskElements.push(ws);
+                    }
+                    taskFolders[_task.workspace].children.push(_task);
+                } else {
+                    taskElements.push(_task);
+                }
+            }
         }
 
-        return taskNames;
+        // Sort logic (workspace folders first, then label)
+        taskElements.sort((a, b) => {
+            const aIsWorkspace = a instanceof WorkspaceTreeItem;
+            const bIsWorkspace = b instanceof WorkspaceTreeItem;
+
+            if (aIsWorkspace && !bIsWorkspace) return -1;
+            if (!aIsWorkspace && bIsWorkspace) return 1;
+
+            const aLabel = typeof a.label === "string"
+                ? a.label : a.label?.label ?? "";
+            const bLabel = typeof b.label === "string"
+                ? b.label : b.label?.label ?? "";
+
+            return aLabel.localeCompare(bLabel);
+        });
+
+        return taskElements;
     }
 
-    getTreeItem (task: TreeTask): vscode.TreeItem {
+    getTreeItem (task: TreeTask | WorkspaceTreeItem): vscode.TreeItem {
         return task;
     }
 }
@@ -245,6 +279,7 @@ export class TaskTreeDataProvider implements vscode.TreeDataProvider<TreeTask> {
 export class TreeTask extends vscode.TreeItem {
     type: string;
     hide: boolean = false;
+    workspace: string | null = null;
 
     constructor (
         type: string,
@@ -257,6 +292,13 @@ export class TreeTask extends vscode.TreeItem {
         this.type = type;
         this.command = command;
         this.label = `${this.label as string}`;
+        if (typeof workspace === 'object' && workspace !== null) {
+            // Multi-root: WorkspaceFolder
+            this.workspace = workspace.name;
+        } else {
+            // No scope, root or unknown
+            this.workspace = null;
+        }
 
         const multiRoot = vscode.workspace.workspaceFolders!.length > 1;
 
@@ -309,10 +351,6 @@ export class TreeTask extends vscode.TreeItem {
                             _task.icon.id,
                             _task.icon.color
                         );
-                    }
-
-                    if (multiRoot) {
-                        this.label += ` (${_workspace.name})`;
                     }
 
                     break;
