@@ -2,16 +2,47 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as JSON5 from 'json5';
 
-export class WorkspaceTreeItem extends vscode.TreeItem {
+export class GroupTreeItem extends vscode.TreeItem {
     children: TreeTask[] = [];
 
+    constructor (groupName: string) {
+        super(groupName, vscode.TreeItemCollapsibleState.Expanded);
+    }
+}
+
+export class WorkspaceTreeItem extends vscode.TreeItem {
+    public childrenObject: { [key: string]: GroupTreeItem } = {};
+    private static readonly otherGroups = 'other-tasks';
+
     constructor (label: string) {
-        super(label, vscode.TreeItemCollapsibleState.Collapsed);
+        super(label, vscode.TreeItemCollapsibleState.Expanded);
+    }
+
+    public async addChildren (child: any): Promise<void> {
+        if (child.group !== null) {
+            if (this.childrenObject[child.group] === undefined) {
+                const group = new GroupTreeItem(child.group);
+                this.childrenObject[child.group] = group;
+            }
+            this.childrenObject[child.group].children.push(child);
+        } else {
+            if (this.childrenObject[
+                WorkspaceTreeItem.otherGroups] === undefined) {
+                const group = new GroupTreeItem(WorkspaceTreeItem.otherGroups);
+                this.childrenObject[WorkspaceTreeItem.otherGroups] = group;
+            }
+            this.childrenObject[
+                WorkspaceTreeItem.otherGroups].children.push(child);
+        }
+    }
+
+    public get children (): Array<TreeTask | GroupTreeItem> {
+        return Object.values(this.childrenObject);
     }
 }
 
 export class TaskTreeDataProvider implements
-vscode.TreeDataProvider<TreeTask | WorkspaceTreeItem> {
+vscode.TreeDataProvider<TreeTask | GroupTreeItem | WorkspaceTreeItem> {
     private readonly _context: vscode.ExtensionContext;
     private readonly _onDidChangeTreeData: vscode.EventEmitter<TreeTask | null>
     = new vscode.EventEmitter<TreeTask | null>();
@@ -207,11 +238,51 @@ vscode.TreeDataProvider<TreeTask | WorkspaceTreeItem> {
         }
     }
 
-    public async getChildren (task?: TreeTask | WorkspaceTreeItem):
-    Promise<Array<TreeTask | WorkspaceTreeItem>> {
-        if (task instanceof WorkspaceTreeItem) {
+    private async sortElements (
+        elements: Array<WorkspaceTreeItem | GroupTreeItem | TreeTask>
+    ): Promise<Array<WorkspaceTreeItem | GroupTreeItem | TreeTask>> {
+        elements.sort((a, b) => {
+            const getLabel = (
+                item: WorkspaceTreeItem | GroupTreeItem | TreeTask
+            ): string => {
+                const label = typeof item.label === "string"
+                    ? item.label
+                    : item.label?.label ?? "";
+                return label;
+            };
+
+            const aLabel = getLabel(a);
+            const bLabel = getLabel(b);
+
+            if (aLabel === "other-tasks" && bLabel !== "other-tasks") return 1;
+            if (bLabel === "other-tasks" && aLabel !== "other-tasks") return -1;
+
+            return aLabel.localeCompare(bLabel);
+        });
+
+        return elements;
+    }
+
+    private async getLowestLevel (
+        elements: Array<WorkspaceTreeItem | TreeTask | GroupTreeItem>
+    ): Promise<Array<WorkspaceTreeItem | TreeTask | GroupTreeItem>> {
+        if (
+            elements.length === 1 &&
+            !(elements[0] instanceof TreeTask)
+        ) {
+            return await this.getLowestLevel(elements[0].children);
+        }
+        return elements;
+    }
+
+    public async getChildren (
+        task?: TreeTask | WorkspaceTreeItem | GroupTreeItem):
+        Promise<Array<TreeTask | GroupTreeItem | WorkspaceTreeItem>> {
+        if (task instanceof WorkspaceTreeItem ||
+            task instanceof GroupTreeItem) {
             // If this is a workspace item, return only its children
-            return task.children;
+            return await this.sortElements(
+                await this.getLowestLevel(task.children));
         }
 
         // Otherwise, return the top-level list
@@ -231,7 +302,8 @@ vscode.TreeDataProvider<TreeTask | WorkspaceTreeItem> {
                     title: "Execute",
                     arguments: [task, task.scope]
                 },
-                task.scope
+                task.scope,
+                (task as any).presentationOptions?.group ?? null
             );
 
             if (task.detail != null) {
@@ -245,33 +317,18 @@ vscode.TreeDataProvider<TreeTask | WorkspaceTreeItem> {
                         taskFolders[_task.workspace] = ws;
                         taskElements.push(ws);
                     }
-                    taskFolders[_task.workspace].children.push(_task);
+                    await taskFolders[_task.workspace].addChildren(_task);
                 } else {
                     taskElements.push(_task);
                 }
             }
         }
 
-        // Sort logic (workspace folders first, then label)
-        taskElements.sort((a, b) => {
-            const aIsWorkspace = a instanceof WorkspaceTreeItem;
-            const bIsWorkspace = b instanceof WorkspaceTreeItem;
-
-            if (aIsWorkspace && !bIsWorkspace) return -1;
-            if (!aIsWorkspace && bIsWorkspace) return 1;
-
-            const aLabel = typeof a.label === "string"
-                ? a.label : a.label?.label ?? "";
-            const bLabel = typeof b.label === "string"
-                ? b.label : b.label?.label ?? "";
-
-            return aLabel.localeCompare(bLabel);
-        });
-
-        return taskElements;
+        return await this.sortElements(await this.getLowestLevel(taskElements));
     }
 
-    getTreeItem (task: TreeTask | WorkspaceTreeItem): vscode.TreeItem {
+    getTreeItem (task: TreeTask | WorkspaceTreeItem | GroupTreeItem):
+    vscode.TreeItem {
         return task;
     }
 }
@@ -280,24 +337,27 @@ export class TreeTask extends vscode.TreeItem {
     type: string;
     hide: boolean = false;
     workspace: string | null = null;
+    group: string | undefined;
 
     constructor (
         type: string,
         label: string,
         collapsibleState: vscode.TreeItemCollapsibleState,
         command?: vscode.Command,
-        workspace?: vscode.WorkspaceFolder | vscode.TaskScope
+        workspace?: vscode.WorkspaceFolder | vscode.TaskScope,
+        group?: string
     ) {
         super(label, collapsibleState);
         this.type = type;
         this.command = command;
         this.label = `${this.label as string}`;
+        this.group = group;
         if (typeof workspace === 'object' && workspace !== null) {
             // Multi-root: WorkspaceFolder
             this.workspace = workspace.name;
-        } else {
-            // No scope, root or unknown
-            this.workspace = null;
+        } else if (workspace === vscode.TaskScope.Workspace) {
+            // Single-root workspace
+            this.workspace = vscode.workspace.name ?? "root";
         }
 
         const multiRoot = vscode.workspace.workspaceFolders!.length > 1;
