@@ -1,6 +1,13 @@
 # Change Log
 
-## [Next]
+## [1.2.2]
+
+- Organize tasks into group folders;
+- Make group folders expanded by default
+- Sort other-tasks folder last
+- Only activate the extension when the workspace contains a tasks.json file;
+
+## [1.2.1]
 
 - Added support for .code-workspace files;
 
