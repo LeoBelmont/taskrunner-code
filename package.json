@@ -32,7 +32,8 @@
             "explorer": [
                 {
                     "id": "taskOutlinePlus",
-                    "name": "Task Runner"
+                    "name": "Task Runner",
+                    "icon": "$(tasklist)"
                 }
             ]
         },
