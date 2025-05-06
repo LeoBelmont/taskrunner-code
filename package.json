@@ -10,7 +10,7 @@
         "url": "https://github.com/microhobby/taskrunner-code.git"
     },
     "engines": {
-        "vscode": "^1.79.0"
+        "vscode": "^1.99.1"
     },
     "categories": [
         "Other"
@@ -21,7 +21,7 @@
         "execute"
     ],
     "galleryBanner": {
-        "color": "#c68f00"
+        "color": "#232323"
     },
     "activationEvents": [
         "onFileSystem:.vscode/tasks.json"
